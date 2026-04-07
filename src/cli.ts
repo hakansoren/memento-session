@@ -45,12 +45,13 @@ program
 
 program
   .command("restore")
-  .description("Restore sessions in tmux panels")
+  .description("Restore sessions in split panes")
   .option("--tool <tool>", "Filter by tool (claude|codex)")
   .option("--here", "Filter to current directory")
   .option("--cwd <path>", "Filter to specific directory")
   .option("--last", "Restore only the most recent session")
   .option("--select", "Interactive session picker")
+  .option("--backend <backend>", "Terminal backend (auto|iterm2|warp|terminal|tmux)", "auto")
   .option("--layout <layout>", "tmux layout (tiled|even-horizontal|even-vertical)", "tiled")
   .argument("[sessionId]", "Restore a specific session by ID")
   .action((sessionId, opts) => {
