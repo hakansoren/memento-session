@@ -18,21 +18,7 @@ export interface RestoreOptions {
   layout?: string;
   all?: boolean;
   status?: "active" | "closed" | "all";
-  backend?: "auto" | "tmux" | "iterm2" | "warp" | "terminal";
   yolo?: boolean;
-}
-
-// ─── Terminal detection ───
-
-type TerminalBackend = "iterm2" | "warp" | "terminal" | "powershell" | "tmux";
-
-function detectTerminal(): TerminalBackend {
-  const termProgram = process.env.TERM_PROGRAM || "";
-  if (termProgram.includes("iTerm")) return "iterm2";
-  if (termProgram.includes("Warp")) return "warp";
-  if (termProgram === "Apple_Terminal") return "terminal";
-  if (process.platform === "win32") return "powershell";
-  return "tmux";
 }
 
 function hasTmux(): boolean {
@@ -62,8 +48,6 @@ function getResumableSessions(sessions: Session[]): Session[] {
   return sessions.filter((s) => s.sessionId && existsSync(s.cwd));
 }
 
-// ─── Shared helpers ───
-
 let _yolo = false;
 
 function buildResumeCmd(session: Session): string {
@@ -76,181 +60,75 @@ function buildResumeCmd(session: Session): string {
   }
 }
 
-function buildFullCmd(session: Session): string {
-  return `cd '${session.cwd}' && ${buildResumeCmd(session)}`;
-}
-
-function runAppleScript(script: string): void {
-  const tmpFile = join(tmpdir(), `memento-${process.pid}-${Date.now()}.scpt`);
-  writeFileSync(tmpFile, script);
-  try {
-    execSync(`osascript ${tmpFile}`, { stdio: "ignore", timeout: 30000 });
-  } finally {
-    try { unlinkSync(tmpFile); } catch {}
-  }
-}
-
-function sleep(seconds: number): void {
-  spawnSync("sleep", [String(seconds)]);
-}
-
-// ─── iTerm2 ───
-
-function restoreWithITerm2(sessions: Session[]): void {
-  const lines: string[] = [];
-  lines.push(`tell application "iTerm2"`);
-  lines.push(`  tell current window`);
-
-  sessions.forEach((session, i) => {
-    const cmd = buildFullCmd(session);
-
-    if (i === 0) {
-      lines.push(`    tell current session`);
-      lines.push(`      write text ${JSON.stringify(cmd)}`);
-      lines.push(`    end tell`);
-    } else {
-      const direction = i % 2 === 1 ? "vertically" : "horizontally";
-      lines.push(`    tell current session`);
-      lines.push(`      set newSession to (split ${direction} with default profile)`);
-      lines.push(`    end tell`);
-      lines.push(`    tell newSession`);
-      lines.push(`      write text ${JSON.stringify(cmd)}`);
-      lines.push(`    end tell`);
-    }
-  });
-
-  lines.push(`  end tell`);
-  lines.push(`end tell`);
-
-  runAppleScript(lines.join("\n"));
-}
-
-// ─── Warp ───
-
-function restoreWithWarp(sessions: Session[]): void {
-  for (let i = 0; i < sessions.length; i++) {
-    const cmd = buildFullCmd(sessions[i]);
-
-    if (i === 0) {
-      runAppleScript(`tell application "Warp" to activate`);
-      sleep(0.5);
-    } else {
-      // Split pane: alternate Cmd+D (vertical) / Cmd+Shift+D (horizontal)
-      const splitKey = i % 2 === 1
-        ? `key code 2 using {command down}`
-        : `key code 2 using {command down, shift down}`;
-      runAppleScript(
-        `tell application "System Events" to tell process "Warp" to ${splitKey}`
-      );
-      sleep(1);
-    }
-
-    // Paste via clipboard to avoid all escaping issues
-    runAppleScript([
-      `set oldClip to the clipboard`,
-      `set the clipboard to ${JSON.stringify(cmd)}`,
-      `tell application "System Events"`,
-      `  keystroke "v" using {command down}`,
-      `  delay 0.3`,
-      `  key code 36`,
-      `end tell`,
-      `delay 0.5`,
-      `set the clipboard to oldClip`,
-    ].join("\n"));
-
-    sleep(0.5);
-  }
-}
-
-// ─── Terminal.app ───
-
-function restoreWithTerminalApp(sessions: Session[]): void {
-  sessions.forEach((session, i) => {
-    const cmd = buildFullCmd(session);
-
-    if (i === 0) {
-      runAppleScript([
-        `tell application "Terminal"`,
-        `  activate`,
-        `  do script ${JSON.stringify(cmd)} in front window`,
-        `end tell`,
-      ].join("\n"));
-    } else {
-      runAppleScript([
-        `tell application "Terminal"`,
-        `  do script ${JSON.stringify(cmd)}`,
-        `end tell`,
-      ].join("\n"));
-    }
-  });
-}
-
-// ─── PowerShell / Windows Terminal ───
-
-function restoreWithPowerShell(sessions: Session[]): void {
-  const hasWt = (() => {
-    try {
-      execSync("where wt", { stdio: "ignore" });
-      return true;
-    } catch {
-      return false;
-    }
-  })();
-
-  if (hasWt) {
-    const args: string[] = [];
-    sessions.forEach((session, i) => {
-      const cmd = buildResumeCmd(session);
-      if (i === 0) {
-        args.push("new-tab", "--title", session.sessionName || "memento", "-d", session.cwd, "pwsh", "-NoExit", "-Command", cmd);
-      } else {
-        const dir = i % 2 === 1 ? "-V" : "-H";
-        args.push(";", "split-pane", dir, "--title", session.sessionName || "memento", "-d", session.cwd, "pwsh", "-NoExit", "-Command", cmd);
-      }
-    });
-    spawnSync("wt", args, { stdio: "inherit" });
-  } else {
-    for (const session of sessions) {
-      const cmd = buildResumeCmd(session);
-      spawnSync("powershell", [
-        "-Command",
-        `Start-Process pwsh -ArgumentList '-NoExit', '-Command', 'cd "${session.cwd}"; ${cmd}'`,
-      ]);
-    }
-  }
-}
-
-// ─── tmux ───
+// ─── Restore via tmux (works in ANY terminal) ───
 
 function restoreWithTmux(sessions: Session[], layout: string): void {
-  const tmuxSession = `memento-${new Date().toTimeString().slice(0, 8).replace(/:/g, "")}`;
-  const inTmux = !!process.env.TMUX;
+  const tmuxSession = `memento-${Date.now().toString(36)}`;
 
-  let paneCount = 0;
-  for (const session of sessions) {
+  // Generate a shell script that sets up the entire tmux session
+  // This avoids all AppleScript/permission issues
+  const scriptLines: string[] = [
+    "#!/usr/bin/env bash",
+    "",
+    "# Kill existing memento tmux sessions if any",
+    `tmux kill-session -t "${tmuxSession}" 2>/dev/null || true`,
+    "",
+    "# Enable mouse support so you can click between panes",
+    `tmux set-option -g mouse on 2>/dev/null || true`,
+    "",
+  ];
+
+  sessions.forEach((session, i) => {
     const cmd = buildResumeCmd(session);
     const windowName = session.sessionName || session.cwd.split("/").pop() || "session";
 
-    if (paneCount === 0) {
-      spawnSync("tmux", ["new-session", "-d", "-s", tmuxSession, "-n", windowName, "-c", session.cwd]);
-      spawnSync("tmux", ["send-keys", "-t", tmuxSession, cmd, "Enter"]);
+    if (i === 0) {
+      scriptLines.push(`# First pane`);
+      scriptLines.push(`tmux new-session -d -s "${tmuxSession}" -n "${windowName}" -c "${session.cwd}"`);
+      scriptLines.push(`tmux send-keys -t "${tmuxSession}" "${cmd}" Enter`);
     } else {
-      spawnSync("tmux", ["split-window", "-t", tmuxSession, "-c", session.cwd]);
-      spawnSync("tmux", ["send-keys", "-t", tmuxSession, cmd, "Enter"]);
-      spawnSync("tmux", ["select-layout", "-t", tmuxSession, layout], { stdio: "ignore" });
+      scriptLines.push(`# Pane ${i + 1}`);
+      scriptLines.push(`tmux split-window -t "${tmuxSession}" -c "${session.cwd}"`);
+      scriptLines.push(`tmux send-keys -t "${tmuxSession}" "${cmd}" Enter`);
+      scriptLines.push(`tmux select-layout -t "${tmuxSession}" "${layout}" 2>/dev/null || true`);
     }
-    paneCount++;
-  }
+    scriptLines.push("");
+  });
 
-  spawnSync("tmux", ["select-layout", "-t", tmuxSession, layout], { stdio: "ignore" });
+  // Final layout + mouse mode + attach
+  scriptLines.push(`# Final layout`);
+  scriptLines.push(`tmux select-layout -t "${tmuxSession}" "${layout}" 2>/dev/null || true`);
+  scriptLines.push("");
+  scriptLines.push(`# Enable mouse mode for this session`);
+  scriptLines.push(`tmux set-option -t "${tmuxSession}" mouse on`);
+  scriptLines.push("");
+  scriptLines.push(`# Set pane border format for easier identification`);
+  scriptLines.push(`tmux set-option -t "${tmuxSession}" pane-border-status top`);
+  scriptLines.push(`tmux set-option -t "${tmuxSession}" pane-border-format " #{pane_index}: #{pane_current_command} — #{pane_current_path} "`);
+  scriptLines.push("");
+  scriptLines.push(`# Attach`);
+  scriptLines.push(`if [ -n "$TMUX" ]; then`);
+  scriptLines.push(`  tmux switch-client -t "${tmuxSession}"`);
+  scriptLines.push(`else`);
+  scriptLines.push(`  tmux attach-session -t "${tmuxSession}"`);
+  scriptLines.push(`fi`);
+
+  const scriptPath = join(tmpdir(), `memento-restore-${process.pid}.sh`);
+  writeFileSync(scriptPath, scriptLines.join("\n"), { mode: 0o755 });
 
   console.log();
   console.log(`${chalk.green("✓")} tmux session: ${chalk.bold(tmuxSession)}`);
+  console.log();
+  console.log(chalk.dim("  Mouse enabled — click panes to switch"));
+  console.log(chalk.dim("  Detach: Ctrl+B then D"));
+  console.log(chalk.dim("  Reattach: tmux attach"));
+  console.log();
 
-  if (inTmux) {
-    spawnSync("tmux", ["switch-client", "-t", tmuxSession], { stdio: "inherit" });
-  } else {
-    spawnSync("tmux", ["attach-session", "-t", tmuxSession], { stdio: "inherit" });
+  // Execute the script — this will attach to tmux
+  try {
+    spawnSync("bash", [scriptPath], { stdio: "inherit" });
+  } finally {
+    try { unlinkSync(scriptPath); } catch {}
   }
 }
 
@@ -259,6 +137,11 @@ function restoreWithTmux(sessions: Session[], layout: string): void {
 export async function restore(opts: RestoreOptions): Promise<void> {
   await ensureDirs();
   await cleanupStaleSessions();
+
+  if (!hasTmux()) {
+    console.error(`${chalk.red("Error:")} tmux is required. Install with: ${chalk.bold("brew install tmux")}`);
+    process.exit(1);
+  }
 
   const filter: SessionFilter = { status: opts.status || "closed" };
   if (opts.tool) filter.tool = opts.tool as "claude" | "codex";
@@ -318,24 +201,10 @@ export async function restore(opts: RestoreOptions): Promise<void> {
     return;
   }
 
-  let backend: TerminalBackend;
-  if (opts.backend && opts.backend !== "auto") {
-    backend = opts.backend as TerminalBackend;
-  } else {
-    backend = detectTerminal();
-  }
-
-  if (backend === "tmux" && !hasTmux()) {
-    console.error(`${chalk.red("Error:")} No supported terminal detected and tmux is not installed.`);
-    console.error(`  Install tmux: ${chalk.bold("brew install tmux")}`);
-    console.error(`  Or use a supported terminal: iTerm2, Warp, Terminal.app`);
-    process.exit(1);
-  }
-
   _yolo = !!opts.yolo;
 
   const yoloLabel = _yolo ? chalk.red(" [YOLO]") : "";
-  console.log(chalk.bold(`Restoring ${toRestore.length} session(s) via ${backend}...`) + yoloLabel);
+  console.log(chalk.bold(`Restoring ${toRestore.length} session(s)...`) + yoloLabel);
   console.log();
 
   for (const session of toRestore) {
@@ -343,14 +212,5 @@ export async function restore(opts: RestoreOptions): Promise<void> {
     console.log(`  ${chalk.green("✓")} [${session.tool}] ${display} — ${shortPath(session.cwd)}`);
   }
 
-  switch (backend) {
-    case "iterm2":    restoreWithITerm2(toRestore); break;
-    case "warp":      restoreWithWarp(toRestore); break;
-    case "terminal":  restoreWithTerminalApp(toRestore); break;
-    case "powershell": restoreWithPowerShell(toRestore); break;
-    case "tmux":      restoreWithTmux(toRestore, opts.layout || "tiled"); break;
-  }
-
-  console.log();
-  console.log(`${chalk.green("✓")} Restored ${toRestore.length} session(s)`);
+  restoreWithTmux(toRestore, opts.layout || "tiled");
 }

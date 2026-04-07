@@ -51,7 +51,6 @@ program
   .option("--cwd <path>", "Filter to specific directory")
   .option("--last", "Restore only the most recent session")
   .option("--select", "Interactive session picker")
-  .option("--backend <backend>", "Terminal backend (auto|iterm2|warp|terminal|tmux)", "auto")
   .option("--layout <layout>", "tmux layout (tiled|even-horizontal|even-vertical)", "tiled")
   .option("--yolo", "Skip all permission prompts (claude: --dangerously-skip-permissions, codex: --full-auto)")
   .argument("[sessionId]", "Restore a specific session by ID")
