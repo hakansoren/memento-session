@@ -1,6 +1,6 @@
 {
   "name": "memento-session",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Session recovery CLI for Claude Code & Codex CLI — never lose your AI coding sessions again",
   "type": "module",
   "bin": {
