@@ -1,0 +1,56 @@
+{
+  "name": "memento-session",
+  "version": "0.1.0",
+  "description": "Session recovery CLI for Claude Code & Codex CLI — never lose your AI coding sessions again",
+  "type": "module",
+  "bin": {
+    "memento": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "memento-hook.zsh",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "claude",
+    "codex",
+    "session",
+    "recovery",
+    "terminal",
+    "tmux",
+    "cli",
+    "ai",
+    "developer-tools",
+    "anthropic",
+    "openai"
+  ],
+  "author": "Hakan Soren",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hakansoren/memento-session.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hakansoren/memento-session/issues"
+  },
+  "homepage": "https://github.com/hakansoren/memento-session#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}
