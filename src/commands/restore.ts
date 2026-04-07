@@ -20,6 +20,7 @@ export interface RestoreOptions {
   all?: boolean;
   status?: "active" | "closed" | "all";
   yolo?: boolean;
+  _sessions?: Session[]; // pre-selected sessions from interactive mode
 }
 
 function hasTmux(): boolean {
@@ -137,9 +138,12 @@ function restoreWithTmux(sessions: Session[], layout: string): void {
 
 export async function restore(opts: RestoreOptions): Promise<void> {
   await ensureDirs();
-  await scanClaudeSessions();
-  await scanCodexSessions();
-  await cleanupStaleSessions();
+
+  if (!opts._sessions) {
+    await scanClaudeSessions();
+    await scanCodexSessions();
+    await cleanupStaleSessions();
+  }
 
   if (!hasTmux()) {
     console.error(`${chalk.red("Error:")} tmux is required. Install with: ${chalk.bold("brew install tmux")}`);
@@ -151,8 +155,13 @@ export async function restore(opts: RestoreOptions): Promise<void> {
   if (opts.here) filter.cwd = process.cwd();
   else if (opts.cwd) filter.cwd = opts.cwd;
 
-  let sessions = await getAllSessions(filter);
-  sessions = getResumableSessions(sessions);
+  let sessions: Session[];
+
+  if (opts._sessions && opts._sessions.length > 0) {
+    sessions = getResumableSessions(opts._sessions);
+  } else {
+    sessions = getResumableSessions(await getAllSessions(filter));
+  }
 
   if (sessions.length === 0) {
     let hint = "";
@@ -164,7 +173,10 @@ export async function restore(opts: RestoreOptions): Promise<void> {
 
   let toRestore: Session[];
 
-  if (opts.last) {
+  if (opts._sessions) {
+    // Pre-selected: skip further filtering
+    toRestore = sessions;
+  } else if (opts.last) {
     toRestore = [sessions[0]];
   } else if (opts.select) {
     console.log(chalk.bold("Restorable sessions:"));
