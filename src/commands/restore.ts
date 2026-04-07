@@ -15,6 +15,7 @@ interface RestoreOptions {
   select?: boolean;
   layout?: string;
   all?: boolean;
+  status?: "active" | "closed" | "all";
 }
 
 function hasTmux(): boolean {
@@ -56,7 +57,7 @@ export async function restore(opts: RestoreOptions): Promise<void> {
 
   await cleanupStaleSessions();
 
-  const filter: SessionFilter = { status: "closed" };
+  const filter: SessionFilter = { status: opts.status || "closed" };
   if (opts.tool) filter.tool = opts.tool as "claude" | "codex";
   if (opts.here) filter.cwd = process.cwd();
   else if (opts.cwd) filter.cwd = opts.cwd;

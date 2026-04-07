@@ -135,5 +135,6 @@ export async function interactive(): Promise<void> {
     tool: undefined,
     cwd: selected.cwd,
     here: false,
+    status: closedOnly ? "closed" : "all",
   });
 }
