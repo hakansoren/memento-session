@@ -2,6 +2,7 @@ import chalk from "chalk";
 import { homedir } from "os";
 import { ensureDirs, getAllSessions } from "../store.js";
 import { cleanupStaleSessions } from "../stale.js";
+import { scanClaudeSessions, scanCodexSessions } from "../scanners/index.js";
 import type { SessionFilter } from "../types.js";
 
 interface ListOptions {
@@ -15,6 +16,8 @@ interface ListOptions {
 
 export async function list(opts: ListOptions): Promise<void> {
   await ensureDirs();
+  await scanClaudeSessions();
+  await scanCodexSessions();
   await cleanupStaleSessions();
 
   const filter: SessionFilter = {};

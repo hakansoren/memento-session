@@ -7,6 +7,7 @@ import { createInterface } from "readline";
 import chalk from "chalk";
 import { ensureDirs, getAllSessions } from "../store.js";
 import { cleanupStaleSessions } from "../stale.js";
+import { scanClaudeSessions, scanCodexSessions } from "../scanners/index.js";
 import type { Session, SessionFilter } from "../types.js";
 
 export interface RestoreOptions {
@@ -136,6 +137,8 @@ function restoreWithTmux(sessions: Session[], layout: string): void {
 
 export async function restore(opts: RestoreOptions): Promise<void> {
   await ensureDirs();
+  await scanClaudeSessions();
+  await scanCodexSessions();
   await cleanupStaleSessions();
 
   if (!hasTmux()) {

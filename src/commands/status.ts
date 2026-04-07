@@ -2,10 +2,13 @@ import chalk from "chalk";
 import { homedir } from "os";
 import { ensureDirs, getAllSessions } from "../store.js";
 import { cleanupStaleSessions } from "../stale.js";
+import { scanClaudeSessions, scanCodexSessions } from "../scanners/index.js";
 import { isPidAlive } from "../process.js";
 
 export async function status(): Promise<void> {
   await ensureDirs();
+  await scanClaudeSessions();
+  await scanCodexSessions();
   await cleanupStaleSessions();
 
   const sessions = await getAllSessions({ status: "active" });

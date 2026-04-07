@@ -3,6 +3,7 @@ import { homedir } from "os";
 import { basename } from "path";
 import { ensureDirs, getAllSessions } from "../store.js";
 import { cleanupStaleSessions } from "../stale.js";
+import { scanClaudeSessions, scanCodexSessions } from "../scanners/index.js";
 import { restore } from "./restore.js";
 import type { Session } from "../types.js";
 
@@ -204,12 +205,16 @@ async function interactiveSelect(groups: DirGroup[]): Promise<SelectResult> {
 
 export async function interactive(): Promise<void> {
   await ensureDirs();
+
+  // Auto-scan before showing UI — always up to date
+  await scanClaudeSessions();
+  await scanCodexSessions();
   await cleanupStaleSessions();
 
   const sessions = await getAllSessions();
 
   if (sessions.length === 0) {
-    console.log(chalk.dim("No sessions found. Run 'memento scan' first."));
+    console.log(chalk.dim("No sessions found."));
     return;
   }
 
