@@ -53,6 +53,7 @@ program
   .option("--select", "Interactive session picker")
   .option("--backend <backend>", "Terminal backend (auto|iterm2|warp|terminal|tmux)", "auto")
   .option("--layout <layout>", "tmux layout (tiled|even-horizontal|even-vertical)", "tiled")
+  .option("--yolo", "Skip all permission prompts (claude: --dangerously-skip-permissions, codex: --full-auto)")
   .argument("[sessionId]", "Restore a specific session by ID")
   .action((sessionId, opts) => {
     if (sessionId) {
@@ -69,6 +70,7 @@ program
   .option("--last", "Restore only the most recent session")
   .option("--select", "Interactive session picker")
   .option("--layout <layout>", "tmux layout", "tiled")
+  .option("--yolo", "Skip all permission prompts")
   .action((opts) => {
     return restore({
       tool: "claude",
@@ -76,6 +78,7 @@ program
       last: opts.last,
       select: opts.select,
       layout: opts.layout,
+      yolo: opts.yolo,
     });
   });
 
@@ -86,6 +89,7 @@ program
   .option("--last", "Restore only the most recent session")
   .option("--select", "Interactive session picker")
   .option("--layout <layout>", "tmux layout", "tiled")
+  .option("--yolo", "Skip all permission prompts")
   .action((opts) => {
     return restore({
       tool: "codex",
@@ -93,6 +97,7 @@ program
       last: opts.last,
       select: opts.select,
       layout: opts.layout,
+      yolo: opts.yolo,
     });
   });
 

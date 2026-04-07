@@ -17,6 +17,7 @@ export interface RestoreOptions {
   all?: boolean;
   status?: "active" | "closed" | "all";
   backend?: "auto" | "tmux" | "iterm2" | "warp" | "terminal";
+  yolo?: boolean; // skip all permissions
 }
 
 // ─── Terminal detection ───
@@ -61,6 +62,19 @@ function getResumableSessions(sessions: Session[]): Session[] {
   return sessions.filter((s) => s.sessionId && existsSync(s.cwd));
 }
 
+// Whether --yolo mode is active (set before calling backends)
+let _yolo = false;
+
+function buildResumeCmd(session: Session): string {
+  if (session.tool === "claude") {
+    const flags = _yolo ? " --dangerously-skip-permissions" : "";
+    return `claude --resume '${session.sessionId}'${flags}`;
+  } else {
+    const flags = _yolo ? " --full-auto" : "";
+    return `codex resume '${session.sessionId}'${flags}`;
+  }
+}
+
 // ─── AppleScript backends ───
 
 function restoreWithITerm2(sessions: Session[]): void {
@@ -70,9 +84,7 @@ function restoreWithITerm2(sessions: Session[]): void {
   commands.push(`  tell current window`);
 
   sessions.forEach((session, i) => {
-    const resumeCmd = session.tool === "claude"
-      ? `claude --resume '${session.sessionId}'`
-      : `codex resume '${session.sessionId}'`;
+    const resumeCmd = buildResumeCmd(session);
 
     if (i === 0) {
       // Use the current session/tab
@@ -104,9 +116,7 @@ function restoreWithWarp(sessions: Session[]): void {
   // Cmd+D = vertical split, Cmd+Shift+D = horizontal split
   for (let i = 0; i < sessions.length; i++) {
     const session = sessions[i];
-    const resumeCmd = session.tool === "claude"
-      ? `claude --resume '${session.sessionId}'`
-      : `codex resume '${session.sessionId}'`;
+    const resumeCmd = buildResumeCmd(session);
     const fullCmd = `cd '${session.cwd}' && ${resumeCmd}`;
 
     if (i > 0) {
@@ -139,9 +149,7 @@ function restoreWithWarp(sessions: Session[]): void {
 function restoreWithTerminalApp(sessions: Session[]): void {
   // Terminal.app: open new tabs (no split pane support)
   sessions.forEach((session, i) => {
-    const resumeCmd = session.tool === "claude"
-      ? `claude --resume '${session.sessionId}'`
-      : `codex resume '${session.sessionId}'`;
+    const resumeCmd = buildResumeCmd(session);
     const fullCmd = `cd '${session.cwd}' && ${resumeCmd}`;
 
     if (i === 0) {
@@ -210,9 +218,7 @@ function restoreWithTmux(sessions: Session[], layout: string): void {
 
   let paneCount = 0;
   for (const session of sessions) {
-    const resumeCmd = session.tool === "claude"
-      ? `claude --resume '${session.sessionId}'`
-      : `codex resume '${session.sessionId}'`;
+    const resumeCmd = buildResumeCmd(session);
     const windowName = session.sessionName || session.cwd.split("/").pop() || "session";
 
     if (paneCount === 0) {
@@ -320,7 +326,11 @@ export async function restore(opts: RestoreOptions): Promise<void> {
     process.exit(1);
   }
 
-  console.log(chalk.bold(`Restoring ${toRestore.length} session(s) via ${backend}...`));
+  // Set yolo mode for resume command builder
+  _yolo = !!opts.yolo;
+
+  const yoloLabel = _yolo ? chalk.red(" [YOLO]") : "";
+  console.log(chalk.bold(`Restoring ${toRestore.length} session(s) via ${backend}...`) + yoloLabel);
   console.log();
 
   for (const session of toRestore) {
