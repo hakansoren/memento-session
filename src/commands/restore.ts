@@ -1,6 +1,8 @@
 import { execSync, spawnSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, writeFileSync, unlinkSync } from "fs";
 import { homedir } from "os";
+import { join } from "path";
+import { tmpdir } from "os";
 import { createInterface } from "readline";
 import chalk from "chalk";
 import { ensureDirs, getAllSessions } from "../store.js";
@@ -17,7 +19,7 @@ export interface RestoreOptions {
   all?: boolean;
   status?: "active" | "closed" | "all";
   backend?: "auto" | "tmux" | "iterm2" | "warp" | "terminal";
-  yolo?: boolean; // skip all permissions
+  yolo?: boolean;
 }
 
 // ─── Terminal detection ───
@@ -26,13 +28,11 @@ type TerminalBackend = "iterm2" | "warp" | "terminal" | "powershell" | "tmux";
 
 function detectTerminal(): TerminalBackend {
   const termProgram = process.env.TERM_PROGRAM || "";
-  const isWindows = process.platform === "win32";
-
   if (termProgram.includes("iTerm")) return "iterm2";
   if (termProgram.includes("Warp")) return "warp";
   if (termProgram === "Apple_Terminal") return "terminal";
-  if (isWindows) return "powershell";
-  return "tmux"; // fallback for Linux / unknown
+  if (process.platform === "win32") return "powershell";
+  return "tmux";
 }
 
 function hasTmux(): boolean {
@@ -62,7 +62,8 @@ function getResumableSessions(sessions: Session[]): Session[] {
   return sessions.filter((s) => s.sessionId && existsSync(s.cwd));
 }
 
-// Whether --yolo mode is active (set before calling backends)
+// ─── Shared helpers ───
+
 let _yolo = false;
 
 function buildResumeCmd(session: Session): string {
@@ -75,21 +76,37 @@ function buildResumeCmd(session: Session): string {
   }
 }
 
-// ─── AppleScript backends ───
+function buildFullCmd(session: Session): string {
+  return `cd '${session.cwd}' && ${buildResumeCmd(session)}`;
+}
+
+function runAppleScript(script: string): void {
+  const tmpFile = join(tmpdir(), `memento-${process.pid}-${Date.now()}.scpt`);
+  writeFileSync(tmpFile, script);
+  try {
+    execSync(`osascript ${tmpFile}`, { stdio: "ignore", timeout: 30000 });
+  } finally {
+    try { unlinkSync(tmpFile); } catch {}
+  }
+}
+
+function sleep(seconds: number): void {
+  spawnSync("sleep", [String(seconds)]);
+}
+
+// ─── iTerm2 ───
 
 function restoreWithITerm2(sessions: Session[]): void {
-  // Build AppleScript via temp file to avoid shell escaping issues
   const lines: string[] = [];
   lines.push(`tell application "iTerm2"`);
   lines.push(`  tell current window`);
 
   sessions.forEach((session, i) => {
-    const resumeCmd = buildResumeCmd(session);
-    const fullCmd = `cd ${JSON.stringify(session.cwd)} && ${resumeCmd}`;
+    const cmd = buildFullCmd(session);
 
     if (i === 0) {
       lines.push(`    tell current session`);
-      lines.push(`      write text ${JSON.stringify(fullCmd)}`);
+      lines.push(`      write text ${JSON.stringify(cmd)}`);
       lines.push(`    end tell`);
     } else {
       const direction = i % 2 === 1 ? "vertically" : "horizontally";
@@ -97,7 +114,7 @@ function restoreWithITerm2(sessions: Session[]): void {
       lines.push(`      set newSession to (split ${direction} with default profile)`);
       lines.push(`    end tell`);
       lines.push(`    tell newSession`);
-      lines.push(`      write text ${JSON.stringify(fullCmd)}`);
+      lines.push(`      write text ${JSON.stringify(cmd)}`);
       lines.push(`    end tell`);
     }
   });
@@ -105,88 +122,72 @@ function restoreWithITerm2(sessions: Session[]): void {
   lines.push(`  end tell`);
   lines.push(`end tell`);
 
-  const { writeFileSync, unlinkSync } = require("fs");
-  const tmpFile = `/tmp/memento-iterm-${process.pid}.scpt`;
-  writeFileSync(tmpFile, lines.join("\n"));
-  try {
-    execSync(`osascript ${tmpFile}`, { stdio: "ignore" });
-  } finally {
-    try { unlinkSync(tmpFile); } catch {}
-  }
+  runAppleScript(lines.join("\n"));
 }
 
-function typeViaClipboard(text: string): void {
-  // Save current clipboard, set command, paste, restore clipboard
-  const script = `
-    set oldClip to the clipboard
-    set the clipboard to ${JSON.stringify(text)}
-    tell application "System Events"
-      keystroke "v" using {command down}
-      delay 0.2
-      key code 36
-    end tell
-    delay 0.3
-    set the clipboard to oldClip
-  `;
-  const { writeFileSync, unlinkSync } = require("fs");
-  const tmpFile = `/tmp/memento-paste-${process.pid}.scpt`;
-  writeFileSync(tmpFile, script);
-  try {
-    execSync(`osascript ${tmpFile}`, { stdio: "ignore" });
-  } finally {
-    try { unlinkSync(tmpFile); } catch {}
-  }
-}
+// ─── Warp ───
 
 function restoreWithWarp(sessions: Session[]): void {
-  // Warp: use AppleScript with System Events for split panes
-  // Cmd+D = vertical split, Cmd+Shift+D = horizontal split
   for (let i = 0; i < sessions.length; i++) {
-    const session = sessions[i];
-    const resumeCmd = buildResumeCmd(session);
-    const fullCmd = `cd '${session.cwd}' && ${resumeCmd}`;
+    const cmd = buildFullCmd(sessions[i]);
 
-    if (i > 0) {
-      // Split pane: alternate vertical/horizontal
-      const splitScript = i % 2 === 1
-        ? `tell application "System Events" to tell process "Warp" to key code 2 using {command down}`
-        : `tell application "System Events" to tell process "Warp" to key code 2 using {command down, shift down}`;
-      execSync(`osascript -e '${splitScript}'`, { stdio: "ignore" });
-      execSync("sleep 1");
+    if (i === 0) {
+      runAppleScript(`tell application "Warp" to activate`);
+      sleep(0.5);
     } else {
-      execSync(`osascript -e 'tell application "Warp" to activate'`, { stdio: "ignore" });
-      execSync("sleep 0.5");
+      // Split pane: alternate Cmd+D (vertical) / Cmd+Shift+D (horizontal)
+      const splitKey = i % 2 === 1
+        ? `key code 2 using {command down}`
+        : `key code 2 using {command down, shift down}`;
+      runAppleScript(
+        `tell application "System Events" to tell process "Warp" to ${splitKey}`
+      );
+      sleep(1);
     }
 
-    // Paste command via clipboard (avoids AppleScript escaping issues)
-    typeViaClipboard(fullCmd);
-    execSync("sleep 0.5");
+    // Paste via clipboard to avoid all escaping issues
+    runAppleScript([
+      `set oldClip to the clipboard`,
+      `set the clipboard to ${JSON.stringify(cmd)}`,
+      `tell application "System Events"`,
+      `  keystroke "v" using {command down}`,
+      `  delay 0.3`,
+      `  key code 36`,
+      `end tell`,
+      `delay 0.5`,
+      `set the clipboard to oldClip`,
+    ].join("\n"));
+
+    sleep(0.5);
   }
 }
 
+// ─── Terminal.app ───
+
 function restoreWithTerminalApp(sessions: Session[]): void {
-  // Terminal.app: open new tabs (no split pane support)
   sessions.forEach((session, i) => {
-    const resumeCmd = buildResumeCmd(session);
-    const fullCmd = `cd '${session.cwd}' && ${resumeCmd}`;
+    const cmd = buildFullCmd(session);
 
     if (i === 0) {
-      execSync(
-        `osascript -e 'tell application "Terminal" to do script "${fullCmd.replace(/"/g, '\\"')}" in front window'`,
-        { stdio: "ignore" }
-      );
+      runAppleScript([
+        `tell application "Terminal"`,
+        `  activate`,
+        `  do script ${JSON.stringify(cmd)} in front window`,
+        `end tell`,
+      ].join("\n"));
     } else {
-      execSync(
-        `osascript -e 'tell application "Terminal" to do script "${fullCmd.replace(/"/g, '\\"')}"'`,
-        { stdio: "ignore" }
-      );
+      runAppleScript([
+        `tell application "Terminal"`,
+        `  do script ${JSON.stringify(cmd)}`,
+        `end tell`,
+      ].join("\n"));
     }
   });
 }
 
+// ─── PowerShell / Windows Terminal ───
+
 function restoreWithPowerShell(sessions: Session[]): void {
-  // Windows Terminal: open new tabs via `wt` CLI
-  // Each session gets its own tab (WT doesn't support split via CLI well)
   const hasWt = (() => {
     try {
       execSync("where wt", { stdio: "ignore" });
@@ -197,38 +198,29 @@ function restoreWithPowerShell(sessions: Session[]): void {
   })();
 
   if (hasWt) {
-    // Use Windows Terminal CLI for split panes
     const args: string[] = [];
     sessions.forEach((session, i) => {
-      const resumeCmd = session.tool === "claude"
-        ? `claude --resume '${session.sessionId}'`
-        : `codex resume '${session.sessionId}'`;
-      const fullCmd = `cd '${session.cwd}'; ${resumeCmd}`;
-
+      const cmd = buildResumeCmd(session);
       if (i === 0) {
-        args.push("new-tab", "--title", session.sessionName || "memento", "-d", session.cwd, "pwsh", "-NoExit", "-Command", resumeCmd);
+        args.push("new-tab", "--title", session.sessionName || "memento", "-d", session.cwd, "pwsh", "-NoExit", "-Command", cmd);
       } else {
-        // Alternate split direction
-        const split = i % 2 === 1 ? "split-pane" : "split-pane";
         const dir = i % 2 === 1 ? "-V" : "-H";
-        args.push(";", split, dir, "--title", session.sessionName || "memento", "-d", session.cwd, "pwsh", "-NoExit", "-Command", resumeCmd);
+        args.push(";", "split-pane", dir, "--title", session.sessionName || "memento", "-d", session.cwd, "pwsh", "-NoExit", "-Command", cmd);
       }
     });
-
     spawnSync("wt", args, { stdio: "inherit" });
   } else {
-    // Fallback: open separate PowerShell windows
     for (const session of sessions) {
-      const resumeCmd = session.tool === "claude"
-        ? `claude --resume '${session.sessionId}'`
-        : `codex resume '${session.sessionId}'`;
+      const cmd = buildResumeCmd(session);
       spawnSync("powershell", [
         "-Command",
-        `Start-Process pwsh -ArgumentList '-NoExit', '-Command', 'cd "${session.cwd}"; ${resumeCmd}'`,
+        `Start-Process pwsh -ArgumentList '-NoExit', '-Command', 'cd "${session.cwd}"; ${cmd}'`,
       ]);
     }
   }
 }
+
+// ─── tmux ───
 
 function restoreWithTmux(sessions: Session[], layout: string): void {
   const tmuxSession = `memento-${new Date().toTimeString().slice(0, 8).replace(/:/g, "")}`;
@@ -236,15 +228,15 @@ function restoreWithTmux(sessions: Session[], layout: string): void {
 
   let paneCount = 0;
   for (const session of sessions) {
-    const resumeCmd = buildResumeCmd(session);
+    const cmd = buildResumeCmd(session);
     const windowName = session.sessionName || session.cwd.split("/").pop() || "session";
 
     if (paneCount === 0) {
       spawnSync("tmux", ["new-session", "-d", "-s", tmuxSession, "-n", windowName, "-c", session.cwd]);
-      spawnSync("tmux", ["send-keys", "-t", tmuxSession, resumeCmd, "Enter"]);
+      spawnSync("tmux", ["send-keys", "-t", tmuxSession, cmd, "Enter"]);
     } else {
       spawnSync("tmux", ["split-window", "-t", tmuxSession, "-c", session.cwd]);
-      spawnSync("tmux", ["send-keys", "-t", tmuxSession, resumeCmd, "Enter"]);
+      spawnSync("tmux", ["send-keys", "-t", tmuxSession, cmd, "Enter"]);
       spawnSync("tmux", ["select-layout", "-t", tmuxSession, layout], { stdio: "ignore" });
     }
     paneCount++;
@@ -326,7 +318,6 @@ export async function restore(opts: RestoreOptions): Promise<void> {
     return;
   }
 
-  // Detect backend
   let backend: TerminalBackend;
   if (opts.backend && opts.backend !== "auto") {
     backend = opts.backend as TerminalBackend;
@@ -334,17 +325,13 @@ export async function restore(opts: RestoreOptions): Promise<void> {
     backend = detectTerminal();
   }
 
-  // Fallback to tmux if native terminal and tmux needed
   if (backend === "tmux" && !hasTmux()) {
-    console.error(
-      `${chalk.red("Error:")} No supported terminal detected and tmux is not installed.`
-    );
+    console.error(`${chalk.red("Error:")} No supported terminal detected and tmux is not installed.`);
     console.error(`  Install tmux: ${chalk.bold("brew install tmux")}`);
     console.error(`  Or use a supported terminal: iTerm2, Warp, Terminal.app`);
     process.exit(1);
   }
 
-  // Set yolo mode for resume command builder
   _yolo = !!opts.yolo;
 
   const yoloLabel = _yolo ? chalk.red(" [YOLO]") : "";
@@ -356,24 +343,12 @@ export async function restore(opts: RestoreOptions): Promise<void> {
     console.log(`  ${chalk.green("✓")} [${session.tool}] ${display} — ${shortPath(session.cwd)}`);
   }
 
-  const layout = opts.layout || "tiled";
-
   switch (backend) {
-    case "iterm2":
-      restoreWithITerm2(toRestore);
-      break;
-    case "warp":
-      restoreWithWarp(toRestore);
-      break;
-    case "terminal":
-      restoreWithTerminalApp(toRestore);
-      break;
-    case "powershell":
-      restoreWithPowerShell(toRestore);
-      break;
-    case "tmux":
-      restoreWithTmux(toRestore, layout);
-      break;
+    case "iterm2":    restoreWithITerm2(toRestore); break;
+    case "warp":      restoreWithWarp(toRestore); break;
+    case "terminal":  restoreWithTerminalApp(toRestore); break;
+    case "powershell": restoreWithPowerShell(toRestore); break;
+    case "tmux":      restoreWithTmux(toRestore, opts.layout || "tiled"); break;
   }
 
   console.log();
