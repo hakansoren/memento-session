@@ -78,37 +78,64 @@ function buildResumeCmd(session: Session): string {
 // ─── AppleScript backends ───
 
 function restoreWithITerm2(sessions: Session[]): void {
-  // First session: use current tab. Rest: split panes.
-  const commands: string[] = [];
-  commands.push(`tell application "iTerm2"`);
-  commands.push(`  tell current window`);
+  // Build AppleScript via temp file to avoid shell escaping issues
+  const lines: string[] = [];
+  lines.push(`tell application "iTerm2"`);
+  lines.push(`  tell current window`);
 
   sessions.forEach((session, i) => {
     const resumeCmd = buildResumeCmd(session);
+    const fullCmd = `cd ${JSON.stringify(session.cwd)} && ${resumeCmd}`;
 
     if (i === 0) {
-      // Use the current session/tab
-      commands.push(`    tell current session`);
-      commands.push(`      write text "cd '${session.cwd}' && ${resumeCmd}"`);
-      commands.push(`    end tell`);
+      lines.push(`    tell current session`);
+      lines.push(`      write text ${JSON.stringify(fullCmd)}`);
+      lines.push(`    end tell`);
     } else {
-      // Split pane: alternate vertical/horizontal for grid
       const direction = i % 2 === 1 ? "vertically" : "horizontally";
-      commands.push(`    tell current session`);
-      commands.push(`      set newSession to (split ${direction} with default profile)`);
-      commands.push(`    end tell`);
-      commands.push(`    tell newSession`);
-      commands.push(`      write text "cd '${session.cwd}' && ${resumeCmd}"`);
-      commands.push(`    end tell`);
+      lines.push(`    tell current session`);
+      lines.push(`      set newSession to (split ${direction} with default profile)`);
+      lines.push(`    end tell`);
+      lines.push(`    tell newSession`);
+      lines.push(`      write text ${JSON.stringify(fullCmd)}`);
+      lines.push(`    end tell`);
     }
   });
 
-  commands.push(`  end tell`);
-  commands.push(`end tell`);
+  lines.push(`  end tell`);
+  lines.push(`end tell`);
 
-  execSync(`osascript -e '${commands.join("\n").replace(/'/g, "'\\''")}'`, {
-    stdio: "ignore",
-  });
+  const { writeFileSync, unlinkSync } = require("fs");
+  const tmpFile = `/tmp/memento-iterm-${process.pid}.scpt`;
+  writeFileSync(tmpFile, lines.join("\n"));
+  try {
+    execSync(`osascript ${tmpFile}`, { stdio: "ignore" });
+  } finally {
+    try { unlinkSync(tmpFile); } catch {}
+  }
+}
+
+function typeViaClipboard(text: string): void {
+  // Save current clipboard, set command, paste, restore clipboard
+  const script = `
+    set oldClip to the clipboard
+    set the clipboard to ${JSON.stringify(text)}
+    tell application "System Events"
+      keystroke "v" using {command down}
+      delay 0.2
+      key code 36
+    end tell
+    delay 0.3
+    set the clipboard to oldClip
+  `;
+  const { writeFileSync, unlinkSync } = require("fs");
+  const tmpFile = `/tmp/memento-paste-${process.pid}.scpt`;
+  writeFileSync(tmpFile, script);
+  try {
+    execSync(`osascript ${tmpFile}`, { stdio: "ignore" });
+  } finally {
+    try { unlinkSync(tmpFile); } catch {}
+  }
 }
 
 function restoreWithWarp(sessions: Session[]): void {
@@ -125,24 +152,15 @@ function restoreWithWarp(sessions: Session[]): void {
         ? `tell application "System Events" to tell process "Warp" to key code 2 using {command down}`
         : `tell application "System Events" to tell process "Warp" to key code 2 using {command down, shift down}`;
       execSync(`osascript -e '${splitScript}'`, { stdio: "ignore" });
-      execSync("sleep 0.8");
+      execSync("sleep 1");
     } else {
       execSync(`osascript -e 'tell application "Warp" to activate'`, { stdio: "ignore" });
       execSync("sleep 0.5");
     }
 
-    // Type command via System Events keystroke (more reliable with escaping)
-    const escaped = fullCmd.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-    const typeScript = [
-      `tell application "System Events"`,
-      `  tell process "Warp"`,
-      `    keystroke "${escaped}"`,
-      `    key code 36`,
-      `  end tell`,
-      `end tell`,
-    ].join("\n");
-    execSync(`osascript -e '${typeScript.replace(/'/g, "'\\''")}'`, { stdio: "ignore" });
-    execSync("sleep 0.3");
+    // Paste command via clipboard (avoids AppleScript escaping issues)
+    typeViaClipboard(fullCmd);
+    execSync("sleep 0.5");
   }
 }
 

@@ -46,7 +46,8 @@
   },
   "dependencies": {
     "chalk": "^5.4.1",
-    "commander": "^13.1.0"
+    "commander": "^13.1.0",
+    "memento": "^0.0.8"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
